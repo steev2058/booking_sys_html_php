@@ -12,10 +12,17 @@ if (isset($_POST['send_otp'])) {
   $tn = trim($_POST['transfer_number'] ?? '');
   $cap = trim($_POST['captcha'] ?? '');
 
-  if (!is_valid_phone($phone)) flash('err', 'رقم الهاتف 09xxxxxxxx');
-  elseif (!is_valid_full_name($name)) flash('err', 'الاسم أحرف فقط');
-  elseif (!is_valid_transfer_number($tn)) flash('err', 'رقم الحوالة english alnum only');
-  elseif ($cap !== ($_SESSION['captcha'] ?? '')) flash('err', 'كابتشا خاطئة');
+  $branchId = (int)($_POST['branch_id'] ?? 0);
+  $companyId = (int)($_POST['company_id'] ?? 0);
+  $bookingDate = trim((string)($_POST['booking_date'] ?? ''));
+  $slotTime = trim((string)($_POST['slot_time'] ?? ''));
+
+  if ($branchId <= 0 || $companyId <= 0 || !$bookingDate || !$slotTime) flash('err', 'يرجى اختيار الفرع والتاريخ والوقت والشركة أولاً');
+  elseif (!booking_date_allowed($bookingDate)) flash('err', 'يمكن الحجز بدءاً من تاريخ الغد فقط');
+  elseif (!is_valid_phone($phone)) flash('err', 'رقم الهاتف يجب أن يبدأ بـ 09 ويتكون من 10 أرقام');
+  elseif (!is_valid_full_name($name)) flash('err', 'الاسم يجب أن يحتوي أحرفاً فقط وبحد أدنى 3 أحرف');
+  elseif (!is_valid_transfer_number($tn)) flash('err', 'رقم الحوالة يجب أن يكون أحرف/أرقام إنجليزية فقط');
+  elseif ($cap !== ($_SESSION['captcha'] ?? '')) flash('err', 'كابتشا غير صحيحة');
   elseif (otp_locked($phone)) flash('err', 'تم قفل المحاولات مؤقتاً');
   else {
     [$canSend, $otpErr] = otp_can_send($phone);
@@ -28,10 +35,10 @@ if (isset($_POST['send_otp'])) {
         flash('err', 'فشل إرسال OTP عبر مزود SMS: ' . ($sms['text'] ?? 'provider error'));
       } else {
         $_SESSION['pending'] = [
-          'branch_id' => (int)($_POST['branch_id'] ?? 0),
-          'company_id' => (int)($_POST['company_id'] ?? 0),
-          'booking_date' => $_POST['booking_date'] ?? '',
-          'slot_time' => $_POST['slot_time'] ?? '',
+          'branch_id' => $branchId,
+          'company_id' => $companyId,
+          'booking_date' => $bookingDate,
+          'slot_time' => $slotTime,
           'phone' => $phone,
           'full_name' => $name,
           'transfer_number' => $tn,
@@ -131,7 +138,93 @@ if ($bid) {
 
 $title='الحجز'; include __DIR__.'/includes/header.php';
 ?>
-<div class='card p-3'><form method='get' class='row g-2'><div class='col-md-4'><label class='form-label'>الفرع</label><select class='form-select' name='branch_id' required><option value=''>اختر</option><?php foreach($branches as $b): ?><option value='<?= $b['id'] ?>' <?= $bid===$b['id']?'selected':'' ?>><?= e($b['name']) ?></option><?php endforeach; ?></select></div><div class='col-md-4'><label class='form-label'>التاريخ</label><select class='form-select' name='booking_date' required><?php foreach($days as $d): ?><option value='<?= e($d) ?>' <?= $bdate===$d?'selected':'' ?>><?= e($d) ?></option><?php endforeach; ?></select></div><div class='col-md-4 d-flex align-items-end'><button class='btn btn-dark w-100'>تحميل</button></div></form><hr>
-<form method='post' class='row g-2'><input type='hidden' name='<?= e($config['security']['csrf_key']) ?>' value='<?= e(csrf_token()) ?>'><input type='hidden' name='branch_id' value='<?= $bid ?>'><input type='hidden' name='booking_date' value='<?= e($bdate) ?>'><div class='col-md-4'><label class='form-label'>الشركة</label><select class='form-select' name='company_id' required><?php foreach($companies as $c): ?><option value='<?= $c['id'] ?>'><?= e($c['name']) ?></option><?php endforeach; ?></select></div><div class='col-md-4'><label class='form-label'>الوقت</label><select class='form-select' name='slot_time' required><?php foreach($slots as $s): if(!$s['available']) continue; ?><option value='<?= e($s['time']) ?>'><?= e($s['time']) ?></option><?php endforeach; ?></select></div><div class='col-md-4'><label class='form-label'>رقم الحوالة</label><input class='form-control' name='transfer_number' required></div><div class='col-md-4'><label class='form-label'>الهاتف</label><input class='form-control' name='phone' required></div><div class='col-md-4'><label class='form-label'>الاسم الثلاثي</label><input class='form-control' name='full_name' required></div><div class='col-md-2'><label class='form-label'>كابتشا</label><input class='form-control' readonly value='<?= e($_SESSION['captcha']) ?>'></div><div class='col-md-2'><label class='form-label'>أدخل</label><input class='form-control' name='captcha' required></div><div class='col-md-4 d-flex align-items-end gap-2'><button class='btn btn-primary w-100' name='send_otp' value='1'>إرسال OTP</button><button class='btn btn-outline-secondary w-100' name='refresh_captcha' value='1'>تحديث</button></div></form>
-<?php if(!empty($_SESSION['pending'])): ?><hr><form method='post' class='row g-2'><input type='hidden' name='<?= e($config['security']['csrf_key']) ?>' value='<?= e(csrf_token()) ?>'><div class='col-md-4'><input class='form-control' name='otp_code' maxlength='4' placeholder='OTP'></div><div class='col-md-4'><button class='btn btn-success w-100' name='confirm_booking' value='1'>تأكيد الحجز</button></div></form><?php endif; ?></div>
+<div class='card p-3'>
+  <form method='get' class='row g-2 js-busy-form'>
+    <div class='col-md-4'>
+      <label class='form-label'>الفرع</label>
+      <select class='form-select' name='branch_id' required>
+        <option value=''>اختر</option>
+        <?php foreach($branches as $b): ?>
+          <option value='<?= $b['id'] ?>' <?= $bid===$b['id']?'selected':'' ?>><?= e($b['name']) ?></option>
+        <?php endforeach; ?>
+      </select>
+    </div>
+    <div class='col-md-4'>
+      <label class='form-label'>التاريخ</label>
+      <select class='form-select' name='booking_date' required>
+        <?php foreach($days as $d): ?>
+          <option value='<?= e($d) ?>' <?= $bdate===$d?'selected':'' ?>><?= e($d) ?></option>
+        <?php endforeach; ?>
+      </select>
+    </div>
+    <div class='col-md-4 d-flex align-items-end'>
+      <button class='btn btn-dark w-100 js-busy-btn'>تحميل المواعيد المتاحة</button>
+    </div>
+  </form>
+
+  <hr>
+
+  <form method='post' class='row g-2 js-busy-form' id='bookingForm'>
+    <input type='hidden' name='<?= e($config['security']['csrf_key']) ?>' value='<?= e(csrf_token()) ?>'>
+    <input type='hidden' name='branch_id' value='<?= $bid ?>'>
+    <input type='hidden' name='booking_date' value='<?= e($bdate) ?>'>
+    <div class='col-md-4'>
+      <label class='form-label'>الشركة</label>
+      <select class='form-select' name='company_id' required>
+        <?php foreach($companies as $c): ?><option value='<?= $c['id'] ?>'><?= e($c['name']) ?></option><?php endforeach; ?>
+      </select>
+    </div>
+    <div class='col-md-4'>
+      <label class='form-label'>الوقت</label>
+      <select class='form-select' name='slot_time' required>
+        <?php foreach($slots as $s): if(!$s['available']) continue; ?><option value='<?= e($s['time']) ?>'><?= e($s['time']) ?></option><?php endforeach; ?>
+      </select>
+    </div>
+    <div class='col-md-4'>
+      <label class='form-label'>رقم الحوالة</label>
+      <input class='form-control' name='transfer_number' required pattern='[A-Za-z0-9]+' title='أحرف وأرقام إنجليزية فقط'>
+    </div>
+    <div class='col-md-4'>
+      <label class='form-label'>الهاتف</label>
+      <input class='form-control' name='phone' required inputmode='numeric' pattern='09\d{8}' placeholder='09xxxxxxxx'>
+    </div>
+    <div class='col-md-4'>
+      <label class='form-label'>الاسم الثلاثي</label>
+      <input class='form-control' name='full_name' required minlength='3'>
+    </div>
+    <div class='col-md-2'>
+      <label class='form-label'>كابتشا</label>
+      <input class='form-control' readonly value='<?= e($_SESSION['captcha']) ?>'>
+    </div>
+    <div class='col-md-2'>
+      <label class='form-label'>أدخل</label>
+      <input class='form-control' name='captcha' required>
+    </div>
+    <div class='col-md-4 d-flex align-items-end gap-2'>
+      <button class='btn btn-primary w-100 js-busy-btn' name='send_otp' value='1'>إرسال OTP</button>
+      <button class='btn btn-outline-secondary w-100' name='refresh_captcha' value='1'>تحديث</button>
+    </div>
+  </form>
+
+  <?php if(!empty($_SESSION['pending'])): ?>
+    <hr>
+    <form method='post' class='row g-2 js-busy-form'>
+      <input type='hidden' name='<?= e($config['security']['csrf_key']) ?>' value='<?= e(csrf_token()) ?>'>
+      <div class='col-md-4'><input class='form-control' name='otp_code' maxlength='4' minlength='4' required placeholder='OTP'></div>
+      <div class='col-md-4'><button class='btn btn-success w-100 js-busy-btn' name='confirm_booking' value='1'>تأكيد الحجز</button></div>
+    </form>
+  <?php endif; ?>
+</div>
+<script>
+  document.querySelectorAll('.js-busy-form').forEach(function(form){
+    form.addEventListener('submit', function(){
+      const btn = form.querySelector('.js-busy-btn');
+      if (!btn) return;
+      btn.disabled = true;
+      const old = btn.innerHTML;
+      btn.dataset.old = old;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> جارٍ التنفيذ...';
+    });
+  });
+</script>
 <?php include __DIR__.'/includes/footer.php';

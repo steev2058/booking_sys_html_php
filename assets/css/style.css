@@ -1,1 +1,4 @@
-body{font-family:Tahoma,Arial,sans-serif}.card{border-radius:12px}
+body{font-family:Tahoma,Arial,sans-serif}
+.card{border-radius:12px}
+.table td,.table th{vertical-align:middle}
+.alert{border-radius:10px}
