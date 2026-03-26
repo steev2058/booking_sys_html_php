@@ -12,14 +12,28 @@
 - Admin CRUDs: branches, companies, business days, holidays, users, appointments, reports.
 - SQL schema + seed data + sample config.
 
+## Parity Upgrade (this phase)
+- Added `.env` loader and old-project-compatible env keys.
+- Implemented real SMS transport using old request style:
+  - endpoint `SMS_ENDPOINT`
+  - query params: `User`, `Pass`, `From`, `Gsm`, `Msg`, `Lang=0`
+- OTP hardening parity:
+  - `OTP_WINDOW_MINUTES`
+  - `OTP_MAX_PER_WINDOW`
+  - `OTP_MAX_VERIFY_ATTEMPTS`
+  - `OTP_LOCK_MINUTES`
+- Added booking confirmation SMS after successful booking.
+- Implemented daily reports generation + dedupe email logs.
+- Implemented email send with Excel attachment (`.xls` HTML table) and recipients parity:
+  - `REPORT_ADMIN_EMAILS`
+  - active dashboard users with `report_email`
+  - manager/employee branch-scoped report rows.
+
 ## Adapted
-- Captcha implemented as server-side session numeric code instead of SVG challenge token.
-- OTP workflow kept but SMS dispatch not hardwired (local OTP shown in flash for test environments).
+- Captcha remains server-side session numeric code (not SVG token format).
+- Email sending in PHP uses MIME + `mail()` transport (works with configured MTA/sendmail). This preserves behavior/output shape; SMTP-auth-native transport would require adding a mail library.
 
-## Skipped (with reason)
-- SMTP report email auto-send: skipped for initial native baseline (adds external dependency/config complexity).
-- MTN SMS endpoint call: left as extension point; many deployments require carrier-side credentials and allowlist.
-
-## Deployment Notes
-- For production, disable OTP preview message and wire real SMS provider.
-- Add HTTPS + secure session cookie settings at web server level.
+## Remaining gaps to 100%
+1. **Frontend parity**: current UI is simpler than original SPA-like JS UI/UX.
+2. **SMTP auth transport parity**: Node used authenticated SMTP directly via nodemailer. PHP version currently relies on server mail transport unless external mailer library is added.
+3. **Automatic minute scheduler parity**: Node ran periodic report checks every minute. PHP version provides generation on booking events + manual generate button; true periodic scheduler should be wired via cron.
