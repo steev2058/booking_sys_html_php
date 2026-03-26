@@ -74,6 +74,66 @@ CREATE TABLE IF NOT EXISTS otp_security (
   locked_until DATETIME NULL
 );
 
+CREATE TABLE IF NOT EXISTS daily_reports (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  report_date DATE NOT NULL,
+  branch_id INT NOT NULL,
+  total_booked INT NOT NULL DEFAULT 0,
+  payload_json LONGTEXT NULL,
+  created_at DATETIME NULL,
+  INDEX idx_report_date_branch (report_date, branch_id)
+);
+
+CREATE TABLE IF NOT EXISTS report_email_logs (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  dedupe_key VARCHAR(64) NOT NULL,
+  email VARCHAR(190) NOT NULL,
+  report_date DATE NOT NULL,
+  branch_id INT NULL,
+  sent_at DATETIME NOT NULL,
+  UNIQUE KEY uniq_dedupe_key (dedupe_key),
+  INDEX idx_report_email_date (report_date, email)
+);
+
+CREATE TABLE IF NOT EXISTS daily_reports (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  report_date DATE NOT NULL,
+  branch_id INT NOT NULL,
+  total_booked INT NOT NULL DEFAULT 0,
+  payload_json LONGTEXT NULL,
+  created_at DATETIME NULL,
+  UNIQUE KEY uniq_report_date_branch (report_date, branch_id),
+  INDEX idx_report_date (report_date)
+);
+
+CREATE TABLE IF NOT EXISTS report_email_logs (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  dedupe_key CHAR(40) NOT NULL,
+  email VARCHAR(190) NOT NULL,
+  report_date DATE NOT NULL,
+  branch_id INT NULL,
+  sent_at DATETIME NULL,
+  UNIQUE KEY uniq_report_email_dedupe (dedupe_key),
+  INDEX idx_report_email_date (report_date)
+);
+CREATE TABLE IF NOT EXISTS daily_reports (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  report_date DATE NOT NULL,
+  branch_id INT NOT NULL,
+  total_booked INT NOT NULL DEFAULT 0,
+  payload_json LONGTEXT NULL,
+  created_at DATETIME NULL,
+  UNIQUE KEY uniq_report_date_branch (report_date, branch_id)
+);
+CREATE TABLE IF NOT EXISTS report_email_logs (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  dedupe_key VARCHAR(191) NOT NULL UNIQUE,
+  email VARCHAR(190) NOT NULL,
+  report_date DATE NOT NULL,
+  branch_id INT NULL,
+  sent_at DATETIME NULL
+);
+
 INSERT INTO branches (code,name,location,active) VALUES ('DAM01','فرع دمشق','دمشق',1)
 ON DUPLICATE KEY UPDATE name=VALUES(name);
 INSERT INTO remittance_companies (name,description,active) VALUES ('Western Union','',1),('MoneyGram','',1);
