@@ -4,7 +4,9 @@ function load_env_file(string $path): void {
     $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
     foreach ($lines as $line) {
         $line = trim($line);
-        if ($line === '' || str_starts_with($line, '#') || !str_contains($line, '=')) continue;
+        $startsWithHash = substr($line, 0, 1) === '#';
+        $hasEquals = strpos($line, '=') !== false;
+        if ($line === '' || $startsWithHash || !$hasEquals) continue;
         [$k, $v] = explode('=', $line, 2);
         $k = trim($k);
         $v = trim($v, " \t\n\r\0\x0B\"");
