@@ -80,4 +80,15 @@ WHERE employee_no='BBSY0001';
 ## Notes
 - All DB operations use prepared statements.
 - Manager/employee views are branch-scoped.
+
+## Env parity keys (same as old Node project)
+- SMS: `SMS_ENDPOINT`, `SMS_USER`, `SMS_PASS`, `SMS_FROM`
+- OTP controls: `OTP_WINDOW_MINUTES`, `OTP_MAX_PER_WINDOW`, `OTP_MAX_VERIFY_ATTEMPTS`, `OTP_LOCK_MINUTES`
+- Reports/email: `REPORTS_DASHBOARD_URL`, `REPORT_ADMIN_EMAILS`, `DEFAULT_ADMIN_REPORT_EMAIL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`
+
+## Daily report email flow
+- Use `/admin/reports.php`:
+  - **Export Excel** for selected date.
+  - **Send daily email** (admin only) with dedupe protection in `report_email_logs`.
+- Recipients include explicit `REPORT_ADMIN_EMAILS` + active users who have `report_email`.
 - SMS requests use old project MTN query pattern (`User/Pass/From/Gsm/Msg/Lang`).

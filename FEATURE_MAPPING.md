@@ -20,7 +20,7 @@
 | CRUD users | `admin/users.php` | ✅ |
 | Appointments list/cancel | `admin/appointments.php` | ✅ |
 | Daily report view | `admin/reports.php` | ✅ |
-| Daily report generate | `generate_daily_reports_if_needed()` + admin trigger button | ✅ |
+| Daily report generate/export | `report_rows_for_date()` live compute + Excel export button | ✅ |
 | Daily report email with Excel attachment | `send_daily_reports_emails_if_needed()` + MIME `.xls` attachment | ✅ |
 | Report recipients behavior | `REPORT_ADMIN_EMAILS` + active users `report_email` with branch scope | ✅ |
 | Report dedupe logs | `report_email_logs` table | ✅ |
