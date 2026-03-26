@@ -15,7 +15,7 @@ Native rewrite of `booking_sys` using **PHP + MySQL + Bootstrap**.
 - PHP 8.1+
 - MySQL 8+
 - Apache/Nginx with PHP-FPM
-- Mail transport configured on host (for report emails)
+- PHP mail extensions (`openssl`) for authenticated SMTP report delivery
 
 ## Env Compatibility (same key names as old project)
 Copy `.env.example` to `.env` and set values:
@@ -39,7 +39,7 @@ Copy `.env.example` to `.env` and set values:
 - Mail sender identity:
   - `SMTP_FROM`
 
-> Note: in current PHP implementation, mail send uses host mail transport (`mail()`), while preserving old report behavior and recipient logic.
+> Report emails now use authenticated SMTP transport (AUTH LOGIN + TLS/STARTTLS) with `SMTP_HOST/PORT/USER/PASS/FROM` keys for parity with old system.
 
 ## Quick Start (Local)
 1. Copy env and config:
@@ -69,6 +69,10 @@ WHERE employee_no='BBSY0001';
   - `REPORT_ADMIN_EMAILS`
   - active users with `report_email`.
 - Dedupe is tracked in `report_email_logs`.
+- Automatic periodic generation parity:
+  - In-app guard runs scheduler periodically on live traffic.
+  - Cron runner: `php scripts/report_scheduler.php` (see `DEPLOY_CRON.md`).
+  - Optional loop: `php scripts/report_scheduler_loop.php 60`.
 
 ## VPS Deploy (Apache/Nginx)
 - Point vhost document root to project root.

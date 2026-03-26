@@ -182,43 +182,171 @@ function otp_reset_fail(string $phone): void {
 function otp_track_verify_fail(string $phone): bool { return otp_track_fail($phone); }
 function otp_reset_verify_fail(string $phone): void { otp_reset_fail($phone); }
 
+function smtp_read_response($socket): string {
+    $response = '';
+    while (!feof($socket)) {
+        $line = fgets($socket, 512);
+        if ($line === false) break;
+        $response .= $line;
+        if (preg_match('/^\d{3}\s/', $line)) break;
+    }
+    return trim($response);
+}
+
+function smtp_expect($socket, array $expectedCodes): array {
+    $resp = smtp_read_response($socket);
+    $code = (int)substr($resp, 0, 3);
+    if (!$resp || !in_array($code, $expectedCodes, true)) {
+        return ['ok' => false, 'error' => $resp ?: 'smtp empty response'];
+    }
+    return ['ok' => true, 'response' => $resp];
+}
+
+function smtp_cmd($socket, string $cmd, array $expectedCodes): array {
+    fwrite($socket, $cmd . "\r\n");
+    return smtp_expect($socket, $expectedCodes);
+}
+
+function smtp_send_mail(string $host, int $port, string $user, string $pass, string $from, string $to, string $subject, string $htmlBody, string $attachmentName, string $attachmentContent): array {
+    $timeout = 15;
+    $secureDirect = $port === 465;
+    $remote = ($secureDirect ? 'tls://' : 'tcp://') . $host . ':' . $port;
+    $ctx = stream_context_create(['ssl' => ['verify_peer' => true, 'verify_peer_name' => true, 'allow_self_signed' => false]]);
+    $socket = @stream_socket_client($remote, $errno, $errstr, $timeout, STREAM_CLIENT_CONNECT, $ctx);
+    if (!$socket) return ['ok' => false, 'error' => "connect failed: {$errstr} ({$errno})"];
+
+    stream_set_timeout($socket, $timeout);
+    $helo = gethostname() ?: 'localhost';
+
+    $greet = smtp_expect($socket, [220]);
+    if (!$greet['ok']) { fclose($socket); return $greet; }
+
+    $ehlo = smtp_cmd($socket, 'EHLO ' . $helo, [250]);
+    if (!$ehlo['ok']) {
+        $ehlo = smtp_cmd($socket, 'HELO ' . $helo, [250]);
+        if (!$ehlo['ok']) { fclose($socket); return $ehlo; }
+    }
+
+    if (!$secureDirect) {
+        $tls = smtp_cmd($socket, 'STARTTLS', [220]);
+        if (!$tls['ok']) { fclose($socket); return ['ok' => false, 'error' => 'STARTTLS not accepted: ' . ($tls['error'] ?? '')]; }
+        $crypto = @stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT);
+        if ($crypto !== true) { fclose($socket); return ['ok' => false, 'error' => 'TLS negotiation failed']; }
+        $ehlo2 = smtp_cmd($socket, 'EHLO ' . $helo, [250]);
+        if (!$ehlo2['ok']) { fclose($socket); return $ehlo2; }
+    }
+
+    $auth = smtp_cmd($socket, 'AUTH LOGIN', [334]);
+    if (!$auth['ok']) { fclose($socket); return $auth; }
+    $authUser = smtp_cmd($socket, base64_encode($user), [334]);
+    if (!$authUser['ok']) { fclose($socket); return $authUser; }
+    $authPass = smtp_cmd($socket, base64_encode($pass), [235]);
+    if (!$authPass['ok']) { fclose($socket); return $authPass; }
+
+    $mailFrom = smtp_cmd($socket, 'MAIL FROM:<' . $from . '>', [250]);
+    if (!$mailFrom['ok']) { fclose($socket); return $mailFrom; }
+    $rcpt = smtp_cmd($socket, 'RCPT TO:<' . $to . '>', [250, 251]);
+    if (!$rcpt['ok']) { fclose($socket); return $rcpt; }
+    $dataStart = smtp_cmd($socket, 'DATA', [354]);
+    if (!$dataStart['ok']) { fclose($socket); return $dataStart; }
+
+    $boundary = 'b_' . md5((string)microtime(true));
+    $encodedSubject = '=?UTF-8?B?' . base64_encode($subject) . '?=';
+    $headers = [
+        'From: ' . $from,
+        'To: ' . $to,
+        'Subject: ' . $encodedSubject,
+        'MIME-Version: 1.0',
+        'Content-Type: multipart/mixed; boundary="' . $boundary . '"',
+    ];
+
+    $body = "--{$boundary}\r\n";
+    $body .= "Content-Type: text/html; charset=UTF-8\r\n";
+    $body .= "Content-Transfer-Encoding: 8bit\r\n\r\n";
+    $body .= $htmlBody . "\r\n";
+    $body .= "--{$boundary}\r\n";
+    $body .= "Content-Type: application/vnd.ms-excel; name=\"{$attachmentName}\"\r\n";
+    $body .= "Content-Transfer-Encoding: base64\r\n";
+    $body .= "Content-Disposition: attachment; filename=\"{$attachmentName}\"\r\n\r\n";
+    $body .= chunk_split(base64_encode($attachmentContent)) . "\r\n";
+    $body .= "--{$boundary}--\r\n";
+
+    $payload = implode("\r\n", $headers) . "\r\n\r\n" . $body . "\r\n.\r\n";
+    fwrite($socket, $payload);
+    $done = smtp_expect($socket, [250]);
+    smtp_cmd($socket, 'QUIT', [221]);
+    fclose($socket);
+
+    return $done['ok'] ? ['ok' => true] : ['ok' => false, 'error' => $done['error'] ?? 'smtp DATA failed'];
+}
+
 function send_report_email(string $to, string $dateYmd, array $rows): array {
     $host = trim((string)cfg('smtp.host', ''));
     $port = (int)cfg('smtp.port', 587);
     $user = trim((string)cfg('smtp.user', ''));
     $pass = trim((string)cfg('smtp.pass', ''));
     $from = trim((string)cfg('smtp.from', $user ?: 'no-reply@albarakasyria.com'));
+
     if (!$to) return ['ok' => false, 'error' => 'recipient missing'];
+    if (!$host || !$port || !$user || !$pass || !$from) return ['ok' => false, 'error' => 'SMTP config missing'];
 
-    // lightweight SMTP via mail() fallback for shared hosting
-    $boundary = 'b_' . md5((string)microtime(true));
+    $dashboardUrl = trim((string)cfg('reports.dashboard_url', ''));
     $subject = "تقرير حجوزات منصة الدور - {$dateYmd}";
-    $htmlBody = '<div dir="rtl" style="font-family:Arial"><h3>تقرير الحجوزات اليومية - ' . e($dateYmd) . '</h3><p>مرفق ملف Excel.</p></div>';
-    $xls = build_excel_html($rows);
     $filename = "daily_booking_report_{$dateYmd}.xls";
+    $htmlBody = '<div dir="rtl" style="font-family:Arial,sans-serif"><h3>تقرير الحجوزات اليومية - ' . e($dateYmd) . '</h3><p>مرفق ملف Excel يتضمن تفاصيل الحجوزات.</p>' .
+        ($dashboardUrl ? '<p><a href="' . e($dashboardUrl) . '">لوحة التقارير</a></p>' : '') . '</div>';
+    return smtp_send_mail($host, $port, $user, $pass, $from, $to, $subject, $htmlBody, $filename, build_excel_html($rows));
+}
 
-    $headers = [];
-    $headers[] = "From: {$from}";
-    $headers[] = 'MIME-Version: 1.0';
-    $headers[] = "Content-Type: multipart/mixed; boundary=\"{$boundary}\"";
+function build_live_reports_for_date(string $dateYmd): array {
+    $pdo = db();
+    $sql = 'SELECT a.branch_id,b.name AS branch_name,a.full_name,a.phone,a.slot_time,a.slot_to
+            FROM appointments a
+            LEFT JOIN branches b ON b.id=a.branch_id
+            WHERE a.booking_date=:d AND a.status="booked"
+            ORDER BY a.branch_id,a.slot_time';
+    $st = $pdo->prepare($sql);
+    $st->execute([':d' => $dateYmd]);
+    $rows = $st->fetchAll() ?: [];
+    $grouped = [];
+    foreach ($rows as $r) {
+        $bid = (int)$r['branch_id'];
+        if (!isset($grouped[$bid])) {
+            $grouped[$bid] = [
+                'branch_id' => $bid,
+                'branch_name' => (string)($r['branch_name'] ?? '-'),
+                'report_date' => $dateYmd,
+                'payload' => []
+            ];
+        }
+        $grouped[$bid]['payload'][] = [
+            'full_name' => (string)($r['full_name'] ?? '-'),
+            'phone' => (string)($r['phone'] ?? '-'),
+            'slot_from' => (string)($r['slot_time'] ?? '-'),
+            'slot_to' => (string)($r['slot_to'] ?? '-'),
+        ];
+    }
+    return array_values($grouped);
+}
 
-    $body = "--{$boundary}\r\n";
-    $body .= "Content-Type: text/html; charset=UTF-8\r\n\r\n";
-    $body .= $htmlBody . "\r\n";
-    $body .= "--{$boundary}\r\n";
-    $body .= "Content-Type: application/vnd.ms-excel; name=\"{$filename}\"\r\n";
-    $body .= "Content-Transfer-Encoding: base64\r\n";
-    $body .= "Content-Disposition: attachment; filename=\"{$filename}\"\r\n\r\n";
-    $body .= chunk_split(base64_encode($xls)) . "\r\n";
-    $body .= "--{$boundary}--";
-
-    $ok = @mail($to, '=?UTF-8?B?' . base64_encode($subject) . '?=', $body, implode("\r\n", $headers));
-    return ['ok' => (bool)$ok, 'error' => $ok ? null : 'mail() failed'];
+function generate_daily_report_snapshots_if_needed(?string $dateYmd = null): void {
+    $dateYmd = $dateYmd ?: date('Y-m-d');
+    $pdo = db();
+    $reports = build_live_reports_for_date($dateYmd);
+    foreach ($reports as $r) {
+        $branchId = (int)$r['branch_id'];
+        $exists = $pdo->prepare('SELECT id FROM daily_reports WHERE report_date=? AND branch_id=? LIMIT 1');
+        $exists->execute([$dateYmd, $branchId]);
+        if ($exists->fetchColumn()) continue;
+        $pdo->prepare('INSERT INTO daily_reports (report_date,branch_id,total_booked,payload_json,created_at) VALUES (?,?,?,?,NOW())')
+            ->execute([$dateYmd, $branchId, count($r['payload']), json_encode($r['payload'], JSON_UNESCAPED_UNICODE)]);
+    }
 }
 
 function generate_daily_reports_if_needed(?string $dateYmd = null): void {
     $dateYmd = $dateYmd ?: date('Y-m-d');
     $pdo = db();
+    generate_daily_report_snapshots_if_needed($dateYmd);
 
     $emails = array_filter(array_map('trim', explode(',', (string)getenv('REPORT_ADMIN_EMAILS'))));
     $defaultAdmin = trim((string)getenv('DEFAULT_ADMIN_REPORT_EMAIL'));
@@ -251,6 +379,30 @@ function generate_daily_reports_if_needed(?string $dateYmd = null): void {
       if ($send['ok']) {
         $pdo->prepare('INSERT INTO report_email_logs (dedupe_key,email,report_date,branch_id,sent_at) VALUES (?,?,?,?,NOW())')->execute([$dedupe, $email, $dateYmd, $scope]);
       }
+    }
+}
+
+function run_reports_scheduler_guard(bool $force = false): array {
+    static $executed = false;
+    if ($executed && !$force) return ['ok' => true, 'skipped' => 'already-run'];
+    $executed = true;
+
+    $intervalSec = max(60, (int)(getenv('REPORT_SCHEDULER_GUARD_INTERVAL_SEC') ?: 300));
+    $lockFile = dirname(__DIR__) . '/logs/report_scheduler_guard.lock';
+    $now = time();
+
+    if (!$force && is_file($lockFile) && ($now - (int)@file_get_contents($lockFile) < $intervalSec)) {
+        return ['ok' => true, 'skipped' => 'throttled'];
+    }
+
+    @file_put_contents($lockFile, (string)$now, LOCK_EX);
+
+    try {
+        generate_daily_reports_if_needed(date('Y-m-d'));
+        return ['ok' => true];
+    } catch (Throwable $e) {
+        @file_put_contents(dirname(__DIR__) . '/logs/report_scheduler_errors.log', '[' . date('c') . '] ' . $e->getMessage() . PHP_EOL, FILE_APPEND);
+        return ['ok' => false, 'error' => $e->getMessage()];
     }
 }
 
