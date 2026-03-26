@@ -135,7 +135,7 @@ function build_excel_html(array $rows): string {
     return '<html><head><meta charset="UTF-8"></head><body dir="rtl"><table border="1" cellspacing="0" cellpadding="6"><thead><tr><th>الاسم</th><th>رقم الموبايل</th><th>تاريخ الحجز</th><th>وقت الحجز</th><th>اسم الفرع</th></tr></thead><tbody>' . $trs . '</tbody></table></body></html>';
 }
 
-function otp_can_send(string $phone): bool {
+function otp_can_send(string $phone): array {
     $pdo = db();
     $windowMinutes = (int)(getenv('OTP_WINDOW_MINUTES') ?: 10);
     $maxPerWindow = (int)(getenv('OTP_MAX_PER_WINDOW') ?: 5);
@@ -144,16 +144,16 @@ function otp_can_send(string $phone): bool {
     $row = $st->fetch();
     if (!$row) {
         $pdo->prepare('INSERT INTO otp_security (phone,send_count,window_start,verify_fail_count,locked_until) VALUES (?,1,NOW(),0,NULL)')->execute([$phone]);
-        return true;
+        return [true, null];
     }
     $ws = !empty($row['window_start']) ? strtotime($row['window_start']) : 0;
     if (!$ws || (time() - $ws) > ($windowMinutes * 60)) {
         $pdo->prepare('UPDATE otp_security SET send_count=1, window_start=NOW() WHERE phone=?')->execute([$phone]);
-        return true;
+        return [true, null];
     }
-    if ((int)$row['send_count'] >= $maxPerWindow) return false;
+    if ((int)$row['send_count'] >= $maxPerWindow) return [false, "Too many OTP requests. Max {$maxPerWindow} every {$windowMinutes} minutes"];
     $pdo->prepare('UPDATE otp_security SET send_count=send_count+1 WHERE phone=?')->execute([$phone]);
-    return true;
+    return [true, null];
 }
 
 function otp_track_fail(string $phone): bool {
@@ -179,14 +179,16 @@ function otp_track_fail(string $phone): bool {
 function otp_reset_fail(string $phone): void {
     db()->prepare('UPDATE otp_security SET verify_fail_count=0, locked_until=NULL WHERE phone=?')->execute([$phone]);
 }
+function otp_track_verify_fail(string $phone): bool { return otp_track_fail($phone); }
+function otp_reset_verify_fail(string $phone): void { otp_reset_fail($phone); }
 
 function send_report_email(string $to, string $dateYmd, array $rows): array {
     $host = trim((string)cfg('smtp.host', ''));
     $port = (int)cfg('smtp.port', 587);
     $user = trim((string)cfg('smtp.user', ''));
     $pass = trim((string)cfg('smtp.pass', ''));
-    $from = trim((string)cfg('smtp.from', $user));
-    if (!$host || !$user || !$pass || !$to) return ['ok' => false, 'error' => 'SMTP config missing'];
+    $from = trim((string)cfg('smtp.from', $user ?: 'no-reply@albarakasyria.com'));
+    if (!$to) return ['ok' => false, 'error' => 'recipient missing'];
 
     // lightweight SMTP via mail() fallback for shared hosting
     $boundary = 'b_' . md5((string)microtime(true));
@@ -216,25 +218,42 @@ function send_report_email(string $to, string $dateYmd, array $rows): array {
 
 function generate_daily_reports_if_needed(?string $dateYmd = null): void {
     $dateYmd = $dateYmd ?: date('Y-m-d');
-    $rows = report_rows_for_date($dateYmd, null);
-    if (!$rows) return;
-
-    $emails = cfg('reports.admin_emails', []);
     $pdo = db();
-    $u = $pdo->query("SELECT report_email FROM dashboard_users WHERE active=1 AND report_email IS NOT NULL AND report_email<>''")->fetchAll();
-    foreach ($u as $r) $emails[] = strtolower(trim((string)$r['report_email']));
-    $emails = array_values(array_unique(array_filter($emails)));
-    if (!$emails) return;
 
+    $emails = array_filter(array_map('trim', explode(',', (string)getenv('REPORT_ADMIN_EMAILS'))));
+    $defaultAdmin = trim((string)getenv('DEFAULT_ADMIN_REPORT_EMAIL'));
+    if ($defaultAdmin !== '') $emails[] = $defaultAdmin;
+
+    $users = $pdo->query("SELECT role, branch_id, report_email FROM dashboard_users WHERE active=1 AND report_email IS NOT NULL AND report_email<>''")->fetchAll() ?: [];
+    $recipients = [];
     foreach ($emails as $email) {
-      $dedupe = sha1($dateYmd.'::'.$email.'::all');
+      $clean = strtolower(trim((string)$email));
+      if ($clean) $recipients[$clean] = ['branch_id' => null];
+    }
+    foreach ($users as $u) {
+      $clean = strtolower(trim((string)$u['report_email']));
+      if (!$clean) continue;
+      $role = strtolower(trim((string)$u['role']));
+      $branchId = in_array($role, ['manager','employee','branch_employee'], true) ? ((int)$u['branch_id'] ?: null) : null;
+      $recipients[$clean] = ['branch_id' => $branchId];
+    }
+
+    foreach ($recipients as $email => $meta) {
+      $scope = $meta['branch_id'] ? (int)$meta['branch_id'] : null;
+      $dedupe = sha1($dateYmd.'::'.$email.'::'.($scope ?: 'all'));
       $ck = $pdo->prepare('SELECT 1 FROM report_email_logs WHERE dedupe_key=? LIMIT 1');
       $ck->execute([$dedupe]);
       if ($ck->fetchColumn()) continue;
 
+      $rows = report_rows_for_date($dateYmd, $scope);
+      if (!$rows) continue;
       $send = send_report_email($email, $dateYmd, $rows);
       if ($send['ok']) {
-        $pdo->prepare('INSERT INTO report_email_logs (dedupe_key,email,report_date,branch_id,sent_at) VALUES (?,?,?,NULL,NOW())')->execute([$dedupe, $email, $dateYmd]);
+        $pdo->prepare('INSERT INTO report_email_logs (dedupe_key,email,report_date,branch_id,sent_at) VALUES (?,?,?,?,NOW())')->execute([$dedupe, $email, $dateYmd, $scope]);
       }
     }
+}
+
+function send_daily_reports_emails_if_needed(?string $dateYmd = null): void {
+    generate_daily_reports_if_needed($dateYmd);
 }
